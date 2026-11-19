@@ -1,8 +1,12 @@
 """Real PostgreSQL row-lock experiment. Events coordinate two database connections; no timing simulation."""
 import threading,time,hashlib,json
+from decimal import Decimal
 from sqlalchemy import text,select
 from src.config.database import engine,Session
 from src.models.entities import Trial,Transfer,TrialBalance,Receipt,Sample
+
+def _num(value):
+    return float(value) if isinstance(value,Decimal) else value
 
 def execute(trial_id):
     with Session() as db:
@@ -22,7 +26,7 @@ def execute(trial_id):
                 if not contender_done.wait(12): raise RuntimeError('竞争事务未在保护期限内结束')
                 changed=c.execute(text('UPDATE trial_balances SET remaining=remaining-:qty,received=received+:qty WHERE trial_id=:id AND remaining>=:qty'),{'id':trial_id,'qty':qty})
                 if changed.rowcount!=1: raise RuntimeError('可用量校验失败')
-                tx.commit();traces.append({'actor':'A','pid':pid,'event':'committed','quantity':qty})
+                tx.commit();traces.append({'actor':'A','pid':pid,'event':'committed','quantity':_num(qty)})
         except Exception as e: errors.append(str(e));acquired.set();contender_done.set()
     def contender():
         try:
@@ -50,7 +54,7 @@ def execute(trial_id):
         balance=db.get(TrialBalance,trial_id)
         receipts=list(db.scalars(select(Receipt).where(Receipt.trial_id==trial_id)))
         invariant=balance.remaining+balance.received==initial and balance.remaining>=0 and len(receipts)==1 and receipts[0].actor=='A'
-        result={'mode':'真实 PostgreSQL / 隔离样本镜像账本','sample':sample.code,'initial':initial,'transfer_quantity':qty,'remaining':balance.remaining,'received':balance.received,'receipt_count':len(receipts),'invariant_passed':invariant,'traces':traces,'sql':['SELECT ... FOR UPDATE','SET LOCAL lock_timeout','INSERT INTO receipts','UPDATE trial_balances','ROLLBACK / COMMIT'],'formula':'remaining + received = initial；A 回执 1 条，B 回执回滚为 0 条'}
+        result={'mode':'真实 PostgreSQL / 隔离样本镜像账本','sample':sample.code,'initial':_num(initial),'transfer_quantity':_num(qty),'remaining':_num(balance.remaining),'received':_num(balance.received),'receipt_count':len(receipts),'invariant_passed':invariant,'traces':traces,'sql':['SELECT ... FOR UPDATE','SET LOCAL lock_timeout','INSERT INTO receipts','UPDATE trial_balances','ROLLBACK / COMMIT'],'formula':'remaining + received = initial；A 回执 1 条，B 回执回滚为 0 条'}
         result['checksum']=hashlib.sha256(json.dumps(result,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
         trial=db.get(Trial,trial_id);trial.result=result;trial.status='completed' if invariant else 'failed';db.commit()
         return result

@@ -57,5 +57,32 @@ docker compose exec -T backend python -m scripts.seed_demo
 
 本地开发：Python3.11安装 backend/requirements.txt；设置 DATABASE_URL/REDIS_URL 后 `uvicorn src.main:app --reload`（backend目录）；worker `python -m src.worker`；前端用Nginx同源代理后端。前端双字体经Google Fonts加载，离线使用浏览器字体回退；业务不依赖外部字体。
 
+## 数量精度升级（v1.1：两位小数）
+
+样本量与移交量由 INTEGER 升级为 `DECIMAL(12,2)`，迁移在应用启动时幂等执行（`src/config/migrations.py`），旧整数库自动 `ALTER ... TYPE ... USING ::DECIMAL(12,2)`，历史值 120 变为 120.00 且不丢数。
+
+|口径|实现|
+|---|---|
+|旧接口升级期按整数办理|`POST/PUT /samples`、`POST /transfers` 仍用 int schema，小数输入 422|
+|两个接口一起切换|单行 `interface_modes`（integer/decimal）；`POST /interface/switch-decimal` 前置校验历史回填全部完成，失败保持 integer 并返回 409|
+|切换失败沿用整数|模式行不满足前置条件时无任何写入，version 不变|
+|v2 小数接口|`POST/PUT /v2/samples`、`POST /v2/transfers`，Decimal 且最多两位小数，超出刻度 422；integer 模式调用返回 409|
+|回退|`POST /interface/rollback-integer`；回退与小数写在同一事务取同一把咨询锁（`pg_try_advisory_xact_lock(74242)`），先办成者生效，另一边 409|
+|移交按当次样本量校验|创建移交时 `SELECT ... FOR UPDATE` 锁定样本行，阻塞并发改量，按锁定的当次 quantity 判定，超限 422|
+|历史数据分批回填|`backfill_jobs` 持久化断点（last_id/done_rows/skipped_rows）；每批 `FOR UPDATE SKIP LOCKED`，业务持锁的行本批跳过、业务提交后下一轮补标记，**以业务写入为准**|
+|回填中断续跑|离线脚本 `python -m scripts.backfill_history [--batch-size=N]`，中断后重跑从断点继续；管理端 `POST /backfill/run` 逐批推进、`GET /backfill/status` 查进度|
+|业务行标记|升级期所有业务写入（v1/v2）自带 `backfilled_at`，回填作业不再覆盖这些行|
+
+模式与回填端点仅 admin 可用（viewer/operator 返回 403），`GET /interface/current` 所有登录用户可读，前端据此把样本/移交表单分流到 v1（`step=1`）或 v2（`step=0.01`）；admin 导航新增「接口管理」页。并发演练的镜像账本、回执、不变量（`remaining + received = initial`）全部按 Decimal 计算，证据 JSON 以数值输出。
+
+### 自动化验证（对接真实 PostgreSQL/Redis）
+
+```sh
+cd backend && python -m pytest tests/ -v          # 17 个用例
+bash tests/e2e_lifecycle.sh                        # 真实 uvicorn+worker 的全生命周期 HTTP 联调
+```
+
+覆盖：v1 拒小数、回填前切换失败保整数、两接口同切、两位/三位小数校验、回退与小数写双向竞态（确定性次序 + 5 轮自由竞争各恰一方获胜）、改量撞回填（SKIP LOCKED 且业务值不被覆盖）、移交撞样本改量的行锁等待与当次量判定、回填中断续跑、小数演练数量守恒与 worker 队列端到端。
+
 ## License
 MIT，见 LICENSE。测试脚本、截图与实际结果位于源码外 `../../test-artifacts/gb-4103/`。

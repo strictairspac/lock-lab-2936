@@ -1,5 +1,19 @@
--- Schema is applied idempotently by SQLAlchemy metadata at startup.
--- See src/models/entities.py for authoritative tables, constraints and relationships.
--- Critical locking query (worker only):
+-- 001 的建表由 SQLAlchemy metadata 在启动时幂等执行（见 src/models/entities.py）。
+-- 002 两位小数升级同样在应用启动时自动、幂等执行（见 src/config/migrations.py）：
+--   1) 数量列 INTEGER -> DECIMAL(12,2)，USING 保留历史整数值（120 -> 120.00）
+--      samples.quantity / transfers.quantity
+--      trial_balances.remaining,received / receipts.quantity
+--   2) samples、transfers 增加 backfilled_at TIMESTAMPTZ（历史数据回填标记）
+--   3) 新表 interface_modes（接口模式单行，初始 integer）
+--      与 backfill_jobs（回填断点：last_id / done_rows / skipped_rows / status）
+-- 手动在 psql 复核升级结果：
+--   SELECT table_name,column_name,data_type,numeric_precision,numeric_scale
+--     FROM information_schema.columns
+--    WHERE column_name IN ('quantity','remaining','received') ORDER BY table_name;
+-- 关键锁查询（worker 演练，未改动）：
 -- SELECT remaining FROM trial_balances WHERE trial_id = :id FOR UPDATE;
 -- SET LOCAL lock_timeout = '250ms';
+-- 模式/小数写互斥（002 新增，咨询锁随事务结束释放）：
+-- SELECT pg_try_advisory_xact_lock(74242);
+-- 回填遇业务行锁主动让出：
+-- SELECT id FROM samples WHERE backfilled_at IS NULL ORDER BY id LIMIT :n FOR UPDATE SKIP LOCKED;

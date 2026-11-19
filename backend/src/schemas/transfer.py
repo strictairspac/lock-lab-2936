@@ -1,4 +1,5 @@
 from pydantic import BaseModel, Field
+# v1：旧整数接口，移交量必须为整数。
 class TransferInput(BaseModel):
     code: str=Field(min_length=2,max_length=80)
     sample_id: int=Field(gt=0)

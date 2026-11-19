@@ -1,4 +1,3 @@
-import json
 from sqlalchemy import select
 from redis import Redis
 from fastapi import HTTPException

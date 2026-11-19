@@ -31,3 +31,7 @@ target/
 *.o
 *.obj
 .DS_Store
+
+# 本地无 root 测试用的 conda 环境（PostgreSQL/Redis 二进制）
+.pgenv/
+.pytest_cache/
